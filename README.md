@@ -5,8 +5,7 @@ from different articles and sources (listed below).
 
 This is a research into browser password encryption and CGO interfacing.
 
-Educational use only: this tool must not be used for illegal activities
-(probably it won't work with modern versions of browsers anyway).
+Educational use only: this tool must not be used for illegal activities.
 
 Releasing in hope that someone might find this interesting.
 
