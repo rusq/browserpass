@@ -7,8 +7,8 @@ import (
 	"io/ioutil"
 	"path/filepath"
 
+	"github.com/rusq/dlog"
 	"github.com/rusq/gonss3"
-	log "github.com/sirupsen/logrus"
 )
 
 type BaseFirefox struct{}
@@ -62,7 +62,7 @@ func newDecryptError(msg string, err error) *DecryptError {
 // loginFiles returns the list of profile login data files
 func (f *BaseFirefox) loginFiles() ([]string, error) {
 	files, err := filepath.Glob(f.dbPathGlob())
-	log.WithField("files", files).WithError(err).Debug("loginFiles()")
+	dlog.Debugf("loginFiles() error: %s", err)
 	return files, err
 }
 

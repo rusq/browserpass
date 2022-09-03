@@ -1,17 +1,14 @@
 package main
 
 import (
-	"syscall"
+	"bytes"
+	"errors"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
-var (
-	dllcrypt32  = syscall.NewLazyDLL("Crypt32.dll")
-	dllkernel32 = syscall.NewLazyDLL("Kernel32.dll")
-
-	procDecryptData = dllcrypt32.NewProc("CryptUnprotectData")
-	procLocalFree   = dllkernel32.NewProc("LocalFree")
-)
+const maxBufSz = 1 << 30
 
 type DATA_BLOB struct {
 	cbData uint32
@@ -34,16 +31,24 @@ func NewBlob(d []byte) *DATA_BLOB {
 
 func (b *DATA_BLOB) ToByteArray() []byte {
 	d := make([]byte, b.cbData)
-	copy(d, (*[1 << 30]byte)(unsafe.Pointer(b.pbData))[:])
+	copy(d, (*[maxBufSz]byte)(unsafe.Pointer(b.pbData))[:])
 	return d
 }
 
 func (c *Chrome) decryptField(data []byte) ([]byte, error) {
-	var outblob DATA_BLOB
-	r, _, err := procDecryptData.Call(uintptr(unsafe.Pointer(NewBlob(data))), 0, 0, 0, 0, 0, uintptr(unsafe.Pointer(&outblob)))
-	if r == 0 {
+	if bytes.HasPrefix(data, []byte("v10")) {
+		return nil, errors.New("unsupported method")
+	}
+	var dataIn = &windows.DataBlob{
+		Size: uint32(len(data)),
+		Data: &data[0],
+	}
+	var dataOut windows.DataBlob
+	if err := windows.CryptUnprotectData(dataIn, nil, nil, 0, nil, 0, &dataOut); err != nil {
 		return nil, err
 	}
-	defer procLocalFree.Call(uintptr(unsafe.Pointer(outblob.pbData)))
-	return outblob.ToByteArray(), nil
+	d := make([]byte, dataOut.Size)
+	copy(d, (*[maxBufSz]byte)(unsafe.Pointer(&dataOut.Size))[:])
+	_, err := windows.LocalFree(windows.Handle(*dataOut.Data))
+	return d, err
 }

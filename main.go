@@ -4,11 +4,11 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 
-	log "github.com/sirupsen/logrus"
-
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/rusq/dlog"
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -37,9 +37,8 @@ type Browser interface {
 
 func main() {
 	flag.Parse()
-	if *verbose {
-		log.SetLevel(log.DebugLevel)
-	}
+
+	dlog.SetDebug(*verbose)
 
 	var (
 		browser Browser
@@ -80,7 +79,7 @@ func formFormatter(results <-chan *LoginInfo, verbose bool) {
 	for res := range results {
 		var decryptErr bool
 		if res.Err != nil {
-			log.Printf("failure on profile %q: %s", res.Profile, res.Err)
+			dlog.Printf("failure on profile %q: %s", res.Profile, res.Err)
 			if _, ok := res.Err.(*DecryptError); !ok {
 				continue
 			}

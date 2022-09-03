@@ -22,3 +22,5 @@ a.out
 
 #ide
 .idea
+
+*.exe

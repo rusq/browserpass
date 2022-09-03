@@ -3,4 +3,4 @@ set MINGW=C:\Program Files\CodeBlocks\MinGW\
 set PATH=%MINGW%\bin;%PATH%
 rem set GOARCH=386
 rem set CGO_ENABLED=1
-go build -ldflags="-s -w"
+dlv debug . -- -b c
